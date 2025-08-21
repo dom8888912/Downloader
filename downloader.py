@@ -51,6 +51,8 @@ async def _sniff(url: str) -> Optional[str]:
                 return await asyncio.wait_for(found, timeout=10)
             except asyncio.TimeoutError:
                 return None
+        try:
+            return await asyncio.wait_for(found, timeout=15)
         finally:
             await browser.close()
 
