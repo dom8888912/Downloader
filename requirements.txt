@@ -1,2 +1,5 @@
 python-dotenv
 rich
+yt-dlp
+playwright
+requests
