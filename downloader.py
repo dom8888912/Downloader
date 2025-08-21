@@ -24,8 +24,36 @@ async def _sniff(url: str) -> Optional[str]:
 
         page.on("response", handle_response)
         await page.goto(url)
+
+        # First wait a moment for direct stream requests during page load.
+        try:
+            return await asyncio.wait_for(found, timeout=5)
+        except asyncio.TimeoutError:
+            # Some sites only load the stream after playback starts. Trigger
+            # a muted play attempt to satisfy autoplay restrictions.
+            try:
+                await page.evaluate(
+                    """
+() => {
+    const v = document.querySelector('video');
+    if (v) {
+        v.muted = true;
+        v.play().catch(() => {});
+    }
+    const btn = document.querySelector('button');
+    if (btn) btn.click();
+}
+"""
+                )
+            except Exception:
+                pass
+            try:
+                return await asyncio.wait_for(found, timeout=10)
+            except asyncio.TimeoutError:
+                return None
         try:
             return await asyncio.wait_for(found, timeout=15)
+
         finally:
             await browser.close()
 
@@ -96,4 +124,8 @@ def process(url: str, cfg, ui) -> None:
     target = resolve_url(url, ui)
     path = download(target, cfg.out, ui)
     if path:
-        upload_to_koofr(path, cfg, ui)
+        if cfg.koofr_user and cfg.koofr_password:
+            upload_to_koofr(path, cfg, ui)
+        else:
+            ui.log(f"Datei lokal gespeichert unter {cfg.out}")
+
