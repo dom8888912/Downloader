@@ -1,21 +1,24 @@
 from config import load_config
-from jd_client import JDClient
 from ui import UI
+from downloader import process, connect_vpn, disconnect_vpn
+
 
 def main():
     cfg = load_config()
     ui = UI()
-    jd = JDClient(cfg, ui)
 
-    ui.set_phase("JD_LINKGRABBER")
-    jd.add_links(cfg.urls)
-
-    if not cfg.dry_run:
-        ui.set_phase("JD_DOWNLOAD")
-        jd.start_downloads()
-        jd.monitor_progress()
+    if cfg.surfshark_server:
+        connect_vpn(cfg.surfshark_server, ui)
+    try:
+        for url in cfg.urls:
+            ui.set_phase("DOWNLOAD")
+            process(url, cfg, ui)
+    finally:
+        if cfg.surfshark_server:
+            disconnect_vpn(ui)
 
     ui.set_phase("DONE")
+
 
 if __name__ == "__main__":
     main()
