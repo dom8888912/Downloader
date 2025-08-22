@@ -9,10 +9,14 @@ Dieses CLI-Tool lädt Videos mit [yt-dlp](https://github.com/yt-dlp/yt-dlp) heru
    ```bash
    pip install -r requirements.txt
    ```
-3. `.env` Datei anlegen (siehe `.env.example`)
+   Für Cloudflare-geschützte Hosts ist `brotli` bereits enthalten und yt-dlp
+   nutzt automatisch HTTP-Impersonation.
+3. [ffmpeg](https://ffmpeg.org) installieren und im `PATH` verfügbar machen
+   (zum Remuxen von HLS-Streams erforderlich)
+4. `.env` Datei anlegen (siehe `.env.example`)
    - Pflicht: `KOOFR_USER`, `KOOFR_PASSWORD`
    - Optional: `KOOFR_BASE`, `SURFSHARK_SERVER`
-4. Beispielaufruf:
+5. Beispielaufruf:
    ```bash
    python main.py --urls https://beispiel.de/video-seite
    ```
