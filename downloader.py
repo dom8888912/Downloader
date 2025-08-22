@@ -91,6 +91,23 @@ def _head_size(url: str) -> Optional[int]:
         return int(cl) if cl else None
     except Exception:
         return None
+=======
+        page.on("response", handle_response)
+        # Navigation can be slow on some sites. If the page takes too long to
+        # load Playwright raises a TimeoutError and our caller would treat this
+        # as a hard failure. We only care about the network responses, so catch
+        # navigation timeouts and continue waiting for matching requests.
+        try:
+            await page.goto(url)
+        except Exception:
+            # Ignore navigation errors and still attempt to sniff responses
+            pass
+        try:
+            # Wait a little longer for the streaming URL to appear in the
+            # network log. Some pages trigger the media request late.
+            return await asyncio.wait_for(found, timeout=30)
+        finally:
+            await browser.close()
 
 
 def resolve_url(url: str, ui) -> str:
