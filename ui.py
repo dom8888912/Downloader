@@ -1,8 +1,9 @@
 from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn
+from pathlib import Path
 
 class UI:
-    def __init__(self):
+    def __init__(self, log_path: str = "downloader.log"):
         self.console = Console()
         self.phase = ""
         self.progress = Progress(
@@ -13,13 +14,16 @@ class UI:
         )
         self.progress.start()
         self.tasks = {}
+        self.log_file = Path(log_path).open("w", encoding="utf-8")
 
     def set_phase(self, phase):
         self.phase = phase
-        self.console.log(f"[bold blue]Phase:[/bold blue] {phase}")
+        self.log(f"[bold blue]Phase:[/bold blue] {phase}")
 
     def log(self, msg):
         self.console.log(msg)
+        self.log_file.write(str(msg) + "\n")
+        self.log_file.flush()
 
     def update_progress(self, name, percent, speed=None, eta=None):
         task = self.tasks.get(name)
@@ -27,3 +31,7 @@ class UI:
             task = self.progress.add_task(name, total=100)
             self.tasks[name] = task
         self.progress.update(task, completed=percent)
+
+    def close(self):
+        self.progress.stop()
+        self.log_file.close()
