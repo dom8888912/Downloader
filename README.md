@@ -8,3 +8,8 @@ Dieses CLI-Tool lädt Videos mit [yt-dlp](https://github.com/yt-dlp/yt-dlp) heru
 2. Abhängigkeiten installieren:
    ```bash
    pip install -r requirements.txt
+   ```
+
+Beim Download zeigt das Tool gefundene Stream-URLs an und sortiert sie nach Größe.
+Sollte die erste URL von `yt-dlp` nicht unterstützt werden, versucht das Programm
+automatisch die nächsten Kandidaten, bis ein Download gelingt.
