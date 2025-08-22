@@ -2,6 +2,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn
 from pathlib import Path
 
+
 class UI:
     def __init__(self, log_path: str = "downloader.log"):
         self.console = Console()
