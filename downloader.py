@@ -58,6 +58,7 @@ async def _sniff(url: str, ui=None) -> list[str]:
         page = await context.new_page()
         page.on("popup", lambda p: asyncio.create_task(p.close()))
         context.on("page", lambda p: asyncio.create_task(p.close()))
+
         found: set[str] = set()
 
         async def handle_response(response):
