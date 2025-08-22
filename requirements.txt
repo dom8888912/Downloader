@@ -3,3 +3,4 @@ rich
 yt-dlp
 playwright
 requests
+brotli
