@@ -196,7 +196,8 @@ def resolve_url(url: str, ui) -> str:
         table.add_row(str(i), s, _format_size(size))
     ui.console.print(table)
 
-    choice = input("Welche URL verwenden? [1]: ")
+    # use Rich's input method so the prompt remains visible while the progress bar is active
+    choice = ui.console.input("Welche URL verwenden? [1]: ")
     try:
         idx = int(choice) - 1 if choice.strip() else 0
     except ValueError:
@@ -226,6 +227,9 @@ def download(url: str, out: str, ui) -> str:
         "concurrent_fragment_downloads": 5,
         # Use HTTP client impersonation to bypass Cloudflare checks on generic sites
         "extractor_args": {"generic": ["impersonate"]},
+        # disable yt-dlp's own progress output so only the rich progress bar is shown
+        "noprogress": True,
+        "quiet": True,
     }
     with YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])

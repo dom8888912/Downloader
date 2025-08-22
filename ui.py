@@ -10,7 +10,9 @@ class UI:
         self.progress = Progress(
             TextColumn("{task.description}"),
             BarColumn(),
-            TextColumn("{task.percentage:>3.0f}%"),
+            TextColumn("{task.percentage:>5.1f}%"),
+            TextColumn("{task.fields[speed]}", justify="right"),
+            TextColumn("ETA {task.fields[eta]}", justify="right"),
             console=self.console,
         )
         self.progress.start()
@@ -31,9 +33,9 @@ class UI:
     def update_progress(self, name, percent, speed=None, eta=None):
         task = self.tasks.get(name)
         if task is None:
-            task = self.progress.add_task(name, total=100)
+            task = self.progress.add_task(name, total=100, speed="", eta="")
             self.tasks[name] = task
-        self.progress.update(task, completed=percent)
+        self.progress.update(task, completed=percent, speed=speed or "", eta=eta or "")
 
     def close(self):
         self.progress.stop()
