@@ -16,8 +16,8 @@ def main():
     finally:
         if cfg.surfshark_server:
             disconnect_vpn(ui)
-
-    ui.set_phase("DONE")
+        ui.set_phase("DONE")
+        ui.close()
 
 
 if __name__ == "__main__":
