@@ -23,9 +23,19 @@ async def _sniff(url: str) -> Optional[str]:
                     found.set_result(response.url)
 
         page.on("response", handle_response)
-        await page.goto(url)
+        # Navigation can be slow on some sites. If the page takes too long to
+        # load Playwright raises a TimeoutError and our caller would treat this
+        # as a hard failure. We only care about the network responses, so catch
+        # navigation timeouts and continue waiting for matching requests.
         try:
-            return await asyncio.wait_for(found, timeout=15)
+            await page.goto(url)
+        except Exception:
+            # Ignore navigation errors and still attempt to sniff responses
+            pass
+        try:
+            # Wait a little longer for the streaming URL to appear in the
+            # network log. Some pages trigger the media request late.
+            return await asyncio.wait_for(found, timeout=30)
         finally:
             await browser.close()
 
