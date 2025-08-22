@@ -2,6 +2,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn
 from pathlib import Path
 
+
 class UI:
     def __init__(self, log_path: str = "downloader.log"):
         self.console = Console()
@@ -14,7 +15,9 @@ class UI:
         )
         self.progress.start()
         self.tasks = {}
-        self.log_file = Path(log_path).open("w", encoding="utf-8")
+        self.log_path = Path(log_path).resolve()
+        self.log_file = self.log_path.open("w", encoding="utf-8")
+        self.console.log(f"Logging to {self.log_path}")
 
     def set_phase(self, phase):
         self.phase = phase

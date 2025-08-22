@@ -12,6 +12,7 @@ from rich.table import Table
 
 STREAM_EXTS = (".m3u8", ".mpd", ".mp4")
 
+# Known embed host patterns whose URLs we can hand off to yt-dlp
 HOST_HINTS = [
     "supervideo.cc",
     "p2pplay",
@@ -27,6 +28,24 @@ AD_PATTERNS = [
     "popads",
     "ads.",
 ]
+
+
+def _fetch_html(url: str) -> str:
+    """Retrieve ``url`` using yt-dlp's HTTP client with impersonation.
+
+    Some hosts (e.g. Cloudflare protected sites) block plain ``requests``
+    calls. By reusing yt-dlp's downloader with ``generic:impersonate`` we
+    mimic a real browser and get the full HTML needed to locate embed
+    players.
+    """
+    ydl_opts = {"quiet": True, "extractor_args": {"generic": ["impersonate"]}}
+    with YoutubeDL(ydl_opts) as ydl:
+        with ydl.urlopen(url) as resp:
+            data = resp.read()
+    try:
+        return data.decode()
+    except Exception:
+        return data.decode("utf-8", errors="ignore")
 
 
 def _extract_embeds(html: str) -> list[str]:
@@ -130,7 +149,12 @@ def _format_size(size: Optional[int]) -> str:
 
 def _head_size(url: str) -> Optional[int]:
     try:
-        resp = requests.head(url, allow_redirects=True, timeout=10)
+        resp = requests.head(
+            url,
+            allow_redirects=True,
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
         cl = resp.headers.get("Content-Length")
         return int(cl) if cl else None
     except Exception:
@@ -143,7 +167,7 @@ def resolve_url(url: str, ui) -> str:
 
     embeds: list[str] = []
     try:
-        html = requests.get(url, timeout=15).text
+        html = _fetch_html(url)
         embeds = _extract_embeds(html)
     except Exception:
         pass
@@ -189,4 +213,53 @@ def download(url: str, out: str, ui) -> str:
         if d.get("status") == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 1
             percent = round(d.get("downloaded_bytes", 0) / total * 100, 1)
-            speed = d.get
+            speed = d.get("_speed_str", "")
+            eta = d.get("_eta_str", "")
+            ui.update_progress(Path(d.get("filename", "")).name, percent, speed, eta)
+        elif d.get("status") == "finished":
+            result["path"] = d.get("filename")
+            ui.log(f"Finished {d.get('filename')}")
+
+    ydl_opts = {
+        "outtmpl": str(Path(out) / "%(title)s.%(ext)s"),
+        "progress_hooks": [hook],
+        "concurrent_fragment_downloads": 5,
+        # Use HTTP client impersonation to bypass Cloudflare checks on generic sites
+        "extractor_args": {"generic": ["impersonate"]},
+    }
+    with YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+    return result["path"] or ""
+
+
+def upload_to_koofr(local_path: str, cfg, ui) -> None:
+    user, password = cfg.koofr_user, cfg.koofr_password
+    if not (user and password):
+        ui.log("Keine Koofr-Credentials, Upload übersprungen")
+        return
+    base = cfg.koofr_base.strip("/")
+    filename = Path(local_path).name
+    url = f"https://app.koofr.net/dav/{base}/{filename}" if base else f"https://app.koofr.net/dav/{filename}"
+    with open(local_path, "rb") as f:
+        resp = requests.put(url, data=f, auth=(user, password))
+    resp.raise_for_status()
+    ui.log(f"Upload nach Koofr abgeschlossen: {filename}")
+
+
+def connect_vpn(server: Optional[str], ui) -> None:
+    if not server:
+        return
+    ui.log(f"Verbinde VPN: {server}")
+    subprocess.run(["surfshark-vpn", "connect", server], check=False)
+
+
+def disconnect_vpn(ui) -> None:
+    ui.log("Trenne VPN")
+    subprocess.run(["surfshark-vpn", "disconnect"], check=False)
+
+
+def process(url: str, cfg, ui) -> None:
+    target = resolve_url(url, ui)
+    path = download(target, cfg.out, ui)
+    if path:
+        upload_to_koofr(path, cfg, ui)
