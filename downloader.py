@@ -7,6 +7,7 @@ from typing import Optional
 
 import requests
 from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError
 from playwright.async_api import async_playwright
 from rich.table import Table
 
@@ -161,9 +162,9 @@ def _head_size(url: str) -> Optional[int]:
         return None
 
 
-def resolve_url(url: str, ui) -> str:
+def resolve_url(url: str, ui) -> list[str]:
     if url.split("?")[0].endswith(STREAM_EXTS):
-        return url
+        return [url]
 
     embeds: list[str] = []
     try:
@@ -182,7 +183,7 @@ def resolve_url(url: str, ui) -> str:
 
     candidates = list(dict.fromkeys(embeds + sniffed))
     if not candidates:
-        return url
+        return [url]
 
     with ThreadPoolExecutor() as ex:
         sizes = list(ex.map(_head_size, candidates))
@@ -203,7 +204,12 @@ def resolve_url(url: str, ui) -> str:
     except ValueError:
         idx = 0
     idx = max(0, min(idx, len(items) - 1))
-    return items[idx][0]
+
+    # return selected URL first, followed by the remaining candidates so callers
+    # can try alternatives if the first choice fails
+    ordered = [items[idx][0]]
+    ordered.extend(s for i, (s, _) in enumerate(items) if i != idx)
+    return ordered
 
 
 def download(url: str, out: str, ui) -> str:
@@ -221,6 +227,21 @@ def download(url: str, out: str, ui) -> str:
             result["path"] = d.get("filename")
             ui.log(f"Finished {d.get('filename')}")
 
+    class YTLogger:
+        def __init__(self, ui):
+            self.ui = ui
+
+        def debug(self, msg):
+            self.ui.log(msg)
+
+        info = debug
+
+        def warning(self, msg):
+            self.ui.log(f"[yellow]{msg}[/yellow]")
+
+        def error(self, msg):
+            self.ui.log(f"[red]{msg}[/red]")
+
     ydl_opts = {
         "outtmpl": str(Path(out) / "%(title)s.%(ext)s"),
         "progress_hooks": [hook],
@@ -229,7 +250,9 @@ def download(url: str, out: str, ui) -> str:
         "extractor_args": {"generic": ["impersonate"]},
         # disable yt-dlp's own progress output so only the rich progress bar is shown
         "noprogress": True,
-        "quiet": True,
+        "quiet": False,
+        "verbose": True,
+        "logger": YTLogger(ui),
     }
     with YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -261,9 +284,30 @@ def disconnect_vpn(ui) -> None:
     ui.log("Trenne VPN")
     subprocess.run(["surfshark-vpn", "disconnect"], check=False)
 
-
 def process(url: str, cfg, ui) -> None:
-    target = resolve_url(url, ui)
-    path = download(target, cfg.out, ui)
-    if path:
-        upload_to_koofr(path, cfg, ui)
+    candidates = resolve_url(url, ui)
+    seen: set[str] = set()
+
+    while candidates:
+        target = candidates.pop(0)
+        if target in seen:
+            continue
+        seen.add(target)
+        ui.log(f"Versuche {target}")
+        try:
+            path = download(target, cfg.out, ui)
+        except Exception as e:
+            ui.log(f"yt-dlp konnte {target} nicht verarbeiten: {e}; versuche nächste URL")
+            try:
+                extra = asyncio.run(_sniff(target, ui))
+            except Exception as e2:
+                ui.log(f"Sniff fehlgeschlagen: {e2}")
+            else:
+                # Try freshly sniffed stream URLs before any remaining
+                # unresolved candidates so that direct media links are
+                # attempted immediately on the next loop iteration.
+                candidates[0:0] = extra
+            continue
+        if path:
+            upload_to_koofr(path, cfg, ui)
+            break

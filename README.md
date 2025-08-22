@@ -8,3 +8,15 @@ Dieses CLI-Tool lädt Videos mit [yt-dlp](https://github.com/yt-dlp/yt-dlp) heru
 2. Abhängigkeiten installieren:
    ```bash
    pip install -r requirements.txt
+   ```
+
+Beim Download zeigt das Tool gefundene Stream-URLs an und sortiert sie nach Größe.
+Sollte die erste URL von `yt-dlp` nicht unterstützt werden, versucht das Programm
+automatisch die nächsten Kandidaten, bis ein Download gelingt.
+Wenn ein Kandidat scheitert, wird die Seite mit Playwright erkundet, um darin
+versteckte `.m3u8`/`.mpd`/`.mp4`-Streams zu finden. Gefundene direkte Streams
+werden sofort an den Anfang der Kandidatenliste gestellt und beim nächsten
+Schritt bevorzugt getestet.
+Falls sämtliche Kandidaten fehlschlagen, endet der Download ohne Ergebnis.
+Alle Meldungen von `yt-dlp` werden zusätzlich in `downloader.log`
+gespeichert, um die Fehlersuche zu erleichtern.
