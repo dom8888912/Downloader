@@ -253,8 +253,7 @@ def download(url: str, out: str, ui) -> str:
         "quiet": False,
         "verbose": True,
         "logger": YTLogger(ui),
-        # use ffmpeg for HLS downloads so live streams work and Cloudflare
-        # challenges can be bypassed
+        # use ffmpeg for HLS downloads so live streams work and Cloudflare challenges can be bypassed
         "downloader": "ffmpeg",
         "hls_use_mpegts": True,
     }
@@ -287,6 +286,7 @@ def connect_vpn(server: Optional[str], ui) -> None:
 def disconnect_vpn(ui) -> None:
     ui.log("Trenne VPN")
     subprocess.run(["surfshark-vpn", "disconnect"], check=False)
+
 
 def process(url: str, cfg, ui) -> None:
     candidates = resolve_url(url, ui)
