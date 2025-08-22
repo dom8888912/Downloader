@@ -34,7 +34,7 @@ def _fetch_html(url: str) -> str:
     """Retrieve ``url`` using yt-dlp's HTTP client with impersonation.
 
     Some hosts (e.g. Cloudflare protected sites) block plain ``requests``
-    calls.  By reusing yt-dlp's downloader with ``generic:impersonate`` we
+    calls. By reusing yt-dlp's downloader with ``generic:impersonate`` we
     mimic a real browser and get the full HTML needed to locate embed
     players.
     """
@@ -77,6 +77,7 @@ async def _sniff(url: str, ui=None) -> list[str]:
         page = await context.new_page()
         page.on("popup", lambda p: asyncio.create_task(p.close()))
         context.on("page", lambda p: asyncio.create_task(p.close()))
+
         found: set[str] = set()
 
         async def handle_response(response):
@@ -195,8 +196,7 @@ def resolve_url(url: str, ui) -> str:
         table.add_row(str(i), s, _format_size(size))
     ui.console.print(table)
 
-    # use Rich's input method so the prompt remains visible while the
-    # progress bar is active
+    # use Rich's input method so the prompt remains visible while the progress bar is active
     choice = ui.console.input("Welche URL verwenden? [1]: ")
     try:
         idx = int(choice) - 1 if choice.strip() else 0
