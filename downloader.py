@@ -284,6 +284,7 @@ def disconnect_vpn(ui) -> None:
     ui.log("Trenne VPN")
     subprocess.run(["surfshark-vpn", "disconnect"], check=False)
 
+
 def process(url: str, cfg, ui) -> None:
     candidates = resolve_url(url, ui)
     seen: set[str] = set()
