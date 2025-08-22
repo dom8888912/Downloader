@@ -304,7 +304,10 @@ def process(url: str, cfg, ui) -> None:
             except Exception as e2:
                 ui.log(f"Sniff fehlgeschlagen: {e2}")
             else:
-                candidates.extend(extra)
+                # Try freshly sniffed stream URLs before any remaining
+                # unresolved candidates so that direct media links are
+                # attempted immediately on the next loop iteration.
+                candidates[0:0] = extra
             continue
         if path:
             upload_to_koofr(path, cfg, ui)
