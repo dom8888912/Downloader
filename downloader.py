@@ -1,45 +1,183 @@
 import asyncio
+import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
 import requests
 from yt_dlp import YoutubeDL
 from playwright.async_api import async_playwright
+from rich.table import Table
 
 STREAM_EXTS = (".m3u8", ".mpd", ".mp4")
 
+HOST_HINTS = [
+    "supervideo.cc",
+    "p2pplay",
+    "kinoger.pw",
+    "kinoger.ru",
+]
 
-async def _sniff(url: str) -> Optional[str]:
+# rudimentary ad host patterns that should be blocked during sniffing
+AD_PATTERNS = [
+    "doubleclick",
+    "googlesyndication",
+    "adservice",
+    "popads",
+    "ads.",
+]
+
+
+def _extract_embeds(html: str) -> list[str]:
+    urls = set(re.findall(r"https?://[^\"'\s]+", html))
+    return [u for u in urls if any(h in u for h in HOST_HINTS)]
+
+
+async def _sniff(url: str, ui=None) -> list[str]:
+    """Capture media requests by exploring the page with Playwright.
+
+    The function is declared as a coroutine so that ``await`` statements such
+    as ``page.goto`` operate within an async context, preventing the
+    "await outside async function" syntax error reported by some users.
+    """
     async with async_playwright() as pw:
         browser = await pw.firefox.launch(headless=True)
-        page = await browser.new_page()
-        found: asyncio.Future[Optional[str]] = asyncio.Future()
+        context = await browser.new_context()
+
+        async def block_ads(route):
+            if any(pat in route.request.url for pat in AD_PATTERNS):
+                if ui:
+                    ui.log(f"Blocked {route.request.url}")
+                await route.abort()
+            else:
+                await route.continue_()
+
+        await context.route("**", block_ads)
+
+        page = await context.new_page()
+        page.on("popup", lambda p: asyncio.create_task(p.close()))
+        context.on("page", lambda p: asyncio.create_task(p.close()))
+        found: set[str] = set()
 
         async def handle_response(response):
-            if not found.done():
-                u = response.url.split("?")[0]
-                if u.endswith(STREAM_EXTS):
-                    found.set_result(response.url)
+            u = response.url.split("?")[0]
+            if u.endswith(STREAM_EXTS):
+                found.add(response.url)
+                if ui:
+                    ui.log(f"Found {response.url}")
 
-        page.on("response", handle_response)
-        await page.goto(url)
+        context.on("response", handle_response)
+
+        # Visiting some pages takes a while. We do not want navigation
+        # timeouts to abort sniffing, so swallow any errors and keep waiting
+        # for network responses instead.
         try:
-            return await asyncio.wait_for(found, timeout=15)
-        finally:
-            await browser.close()
+            await page.goto(url, timeout=60_000)
+        except Exception:
+            pass
+
+        visited: set[int] = set()
+
+        async def trigger(frame):
+            fid = id(frame)
+            if fid in visited:
+                return
+            visited.add(fid)
+
+            selectors = [
+                "button[aria-label*=play i]",
+                "button",
+                "div[role=button]",
+                "div[id*=play]",
+                "div[class*=play]",
+                "span[class*=play]",
+                "video",
+            ]
+            for sel in selectors:
+                try:
+                    await frame.locator(sel).first.click(timeout=1_000, force=True, no_wait_after=True)
+                    break
+                except Exception:
+                    continue
+            try:
+                await frame.evaluate("document.querySelectorAll('video').forEach(v=>v.play())")
+            except Exception:
+                pass
+
+        page.on("frameattached", lambda f: asyncio.create_task(trigger(f)))
+
+        end = asyncio.get_event_loop().time() + 30
+        while asyncio.get_event_loop().time() < end:
+            for f in page.frames:
+                await trigger(f)
+            await asyncio.sleep(2)
+
+        await browser.close()
+        return list(found)
+
+
+def _format_size(size: Optional[int]) -> str:
+    if not size:
+        return "?"
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def _head_size(url: str) -> Optional[int]:
+    try:
+        resp = requests.head(url, allow_redirects=True, timeout=10)
+        cl = resp.headers.get("Content-Length")
+        return int(cl) if cl else None
+    except Exception:
+        return None
 
 
 def resolve_url(url: str, ui) -> str:
     if url.split("?")[0].endswith(STREAM_EXTS):
         return url
-    ui.log("Sniffing stream URL via Playwright")
+
+    embeds: list[str] = []
     try:
-        sniffed = asyncio.run(_sniff(url))
-        return sniffed or url
-    except Exception as e:
-        ui.log(f"Sniff failed: {e}")
+        html = requests.get(url, timeout=15).text
+        embeds = _extract_embeds(html)
+    except Exception:
+        pass
+
+    sniffed: list[str] = []
+    if not embeds:
+        ui.log("Sniffing stream URL via Playwright")
+        try:
+            sniffed = asyncio.run(_sniff(url, ui))
+        except Exception as e:
+            ui.log(f"Sniff failed: {e}")
+
+    candidates = list(dict.fromkeys(embeds + sniffed))
+    if not candidates:
         return url
+
+    with ThreadPoolExecutor() as ex:
+        sizes = list(ex.map(_head_size, candidates))
+    items = sorted(zip(candidates, sizes), key=lambda x: x[1] or 0, reverse=True)
+
+    table = Table(title="Gefundene Streams")
+    table.add_column("Nr")
+    table.add_column("URL")
+    table.add_column("Größe")
+    for i, (s, size) in enumerate(items, start=1):
+        table.add_row(str(i), s, _format_size(size))
+    ui.console.print(table)
+
+    choice = input("Welche URL verwenden? [1]: ")
+    try:
+        idx = int(choice) - 1 if choice.strip() else 0
+    except ValueError:
+        idx = 0
+    idx = max(0, min(idx, len(items) - 1))
+    return items[idx][0]
 
 
 def download(url: str, out: str, ui) -> str:
@@ -60,6 +198,7 @@ def download(url: str, out: str, ui) -> str:
     ydl_opts = {
         "outtmpl": str(Path(out) / "%(title)s.%(ext)s"),
         "progress_hooks": [hook],
+        "concurrent_fragment_downloads": 5,
     }
     with YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
