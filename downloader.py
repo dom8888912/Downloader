@@ -227,6 +227,21 @@ def download(url: str, out: str, ui) -> str:
             result["path"] = d.get("filename")
             ui.log(f"Finished {d.get('filename')}")
 
+    class YTLogger:
+        def __init__(self, ui):
+            self.ui = ui
+
+        def debug(self, msg):
+            self.ui.log(msg)
+
+        info = debug
+
+        def warning(self, msg):
+            self.ui.log(f"[yellow]{msg}[/yellow]")
+
+        def error(self, msg):
+            self.ui.log(f"[red]{msg}[/red]")
+
     ydl_opts = {
         "outtmpl": str(Path(out) / "%(title)s.%(ext)s"),
         "progress_hooks": [hook],
@@ -235,7 +250,9 @@ def download(url: str, out: str, ui) -> str:
         "extractor_args": {"generic": ["impersonate"]},
         # disable yt-dlp's own progress output so only the rich progress bar is shown
         "noprogress": True,
-        "quiet": True,
+        "quiet": False,
+        "verbose": True,
+        "logger": YTLogger(ui),
     }
     with YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -276,14 +293,15 @@ def process(url: str, cfg, ui) -> None:
         if target in seen:
             continue
         seen.add(target)
+        ui.log(f"Versuche {target}")
         try:
             path = download(target, cfg.out, ui)
-        except DownloadError:
-            ui.log(f"yt-dlp konnte {target} nicht verarbeiten, versuche nächste URL")
+        except Exception as e:
+            ui.log(f"yt-dlp konnte {target} nicht verarbeiten: {e}; versuche nächste URL")
             try:
                 extra = asyncio.run(_sniff(target, ui))
-            except Exception as e:
-                ui.log(f"Sniff fehlgeschlagen: {e}")
+            except Exception as e2:
+                ui.log(f"Sniff fehlgeschlagen: {e2}")
             else:
                 candidates.extend(extra)
             continue

@@ -15,3 +15,5 @@ Sollte die erste URL von `yt-dlp` nicht unterstützt werden, versucht das Progra
 automatisch die nächsten Kandidaten, bis ein Download gelingt.
 Falls alle Kandidaten fehlschlagen, wird jede URL mit Playwright erneut erkundet,
 um darin versteckte `.m3u8`/`.mpd`/`.mp4`-Streams zu finden.
+Alle Meldungen von `yt-dlp` werden zusätzlich in `downloader.log`
+gespeichert, um die Fehlersuche zu erleichtern.
