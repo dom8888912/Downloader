@@ -253,6 +253,9 @@ def download(url: str, out: str, ui) -> str:
         "quiet": False,
         "verbose": True,
         "logger": YTLogger(ui),
+        # use ffmpeg for HLS downloads so live streams work and Cloudflare challenges can be bypassed
+        "downloader": "ffmpeg",
+        "hls_use_mpegts": True,
     }
     with YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
