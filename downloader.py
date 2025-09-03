@@ -3,12 +3,16 @@ import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import requests
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 from playwright.async_api import async_playwright
+
+# flag to avoid repeatedly trying Playwright when the bundled browsers are
+# missing and sniffing is therefore impossible
+PLAYWRIGHT_AVAILABLE = True
 from rich.table import Table
 
 STREAM_EXTS = (".m3u8", ".mpd", ".mp4")
@@ -57,85 +61,93 @@ def _extract_embeds(html: str) -> list[str]:
 async def _sniff(url: str, ui=None) -> list[str]:
     """Capture media requests by exploring the page with Playwright.
 
-    The function is declared as a coroutine so that ``await`` statements such
-    as ``page.goto`` operate within an async context, preventing the
-    "await outside async function" syntax error reported by some users.
+    If launching the browser fails (e.g. because ``playwright install`` wasn't
+    run), the failure is propagated and ``PLAYWRIGHT_AVAILABLE`` is set to
+    ``False`` so later calls can skip sniffing altogether.
     """
-    async with async_playwright() as pw:
-        browser = await pw.firefox.launch(headless=True)
-        context = await browser.new_context()
+    global PLAYWRIGHT_AVAILABLE
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.firefox.launch(headless=True)
+            context = await browser.new_context()
 
-        async def block_ads(route):
-            if any(pat in route.request.url for pat in AD_PATTERNS):
-                if ui:
-                    ui.log(f"Blocked {route.request.url}")
-                await route.abort()
-            else:
-                await route.continue_()
+            async def block_ads(route):
+                if any(pat in route.request.url for pat in AD_PATTERNS):
+                    if ui:
+                        ui.log(f"Blocked {route.request.url}")
+                    await route.abort()
+                else:
+                    await route.continue_()
 
-        await context.route("**", block_ads)
+            await context.route("**", block_ads)
 
-        page = await context.new_page()
-        page.on("popup", lambda p: asyncio.create_task(p.close()))
-        context.on("page", lambda p: asyncio.create_task(p.close()))
+            page = await context.new_page()
+            page.on("popup", lambda p: asyncio.create_task(p.close()))
+            context.on("page", lambda p: asyncio.create_task(p.close()))
 
-        found: set[str] = set()
+            found: set[str] = set()
 
-        async def handle_response(response):
-            u = response.url.split("?")[0]
-            if u.endswith(STREAM_EXTS):
-                found.add(response.url)
-                if ui:
-                    ui.log(f"Found {response.url}")
+            async def handle_response(response):
+                u = response.url.split("?")[0]
+                if u.endswith(STREAM_EXTS):
+                    found.add(response.url)
+                    if ui:
+                        ui.log(f"Found {response.url}")
 
-        context.on("response", handle_response)
+            context.on("response", handle_response)
 
-        # Visiting some pages takes a while. We do not want navigation
-        # timeouts to abort sniffing, so swallow any errors and keep waiting
-        # for network responses instead.
-        try:
-            await page.goto(url, timeout=60_000)
-        except Exception:
-            pass
-
-        visited: set[int] = set()
-
-        async def trigger(frame):
-            fid = id(frame)
-            if fid in visited:
-                return
-            visited.add(fid)
-
-            selectors = [
-                "button[aria-label*=play i]",
-                "button",
-                "div[role=button]",
-                "div[id*=play]",
-                "div[class*=play]",
-                "span[class*=play]",
-                "video",
-            ]
-            for sel in selectors:
-                try:
-                    await frame.locator(sel).first.click(timeout=1_000, force=True, no_wait_after=True)
-                    break
-                except Exception:
-                    continue
+            # Visiting some pages takes a while. We do not want navigation
+            # timeouts to abort sniffing, so swallow any errors and keep waiting
+            # for network responses instead.
             try:
-                await frame.evaluate("document.querySelectorAll('video').forEach(v=>v.play())")
+                await page.goto(url, timeout=60_000)
             except Exception:
                 pass
 
-        page.on("frameattached", lambda f: asyncio.create_task(trigger(f)))
+            visited: set[int] = set()
 
-        end = asyncio.get_event_loop().time() + 30
-        while asyncio.get_event_loop().time() < end:
-            for f in page.frames:
-                await trigger(f)
-            await asyncio.sleep(2)
+            async def trigger(frame):
+                fid = id(frame)
+                if fid in visited:
+                    return
+                visited.add(fid)
 
-        await browser.close()
-        return list(found)
+                selectors = [
+                    "button[aria-label*=play i]",
+                    "button",
+                    "div[role=button]",
+                    "div[id*=play]",
+                    "div[class*=play]",
+                    "span[class*=play]",
+                    "video",
+                ]
+                for sel in selectors:
+                    try:
+                        await frame.locator(sel).first.click(timeout=1_000, force=True, no_wait_after=True)
+                        break
+                    except Exception:
+                        continue
+                try:
+                    await frame.evaluate("document.querySelectorAll('video').forEach(v=>v.play())")
+                except Exception:
+                    pass
+
+            page.on("frameattached", lambda f: asyncio.create_task(trigger(f)))
+
+            end = asyncio.get_event_loop().time() + 30
+            while asyncio.get_event_loop().time() < end:
+                for f in page.frames:
+                    await trigger(f)
+                await asyncio.sleep(2)
+
+            await browser.close()
+            return list(found)
+    except Exception as e:
+        PLAYWRIGHT_AVAILABLE = False
+        if "Executable doesn't exist" in str(e) and ui:
+            # Offer a concise hint for the common case of missing browsers
+            ui.log("Playwright-Browser fehlen – `playwright install` ausführen")
+        raise
 
 
 def _format_size(size: Optional[int]) -> str:
@@ -148,22 +160,25 @@ def _format_size(size: Optional[int]) -> str:
     return f"{size:.1f} TB"
 
 
-def _head_size(url: str) -> Optional[int]:
+def _probe_stream(url: str) -> Tuple[int, Optional[int]]:
+    """Return the highest available height and approximate size for ``url``."""
     try:
-        resp = requests.head(
-            url,
-            allow_redirects=True,
-            timeout=10,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        cl = resp.headers.get("Content-Length")
-        return int(cl) if cl else None
+        with YoutubeDL({"quiet": True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+        formats = info.get("formats") or [info]
+        best = max(formats, key=lambda f: f.get("height") or 0)
+        height = best.get("height") or 0
+        size = best.get("filesize") or best.get("filesize_approx")
+        return height, size
     except Exception:
-        return None
+        return 0, None
 
 
 def resolve_url(url: str, ui) -> list[str]:
     if url.split("?")[0].endswith(STREAM_EXTS):
+        height, _ = _probe_stream(url)
+        if height < 1080:
+            raise RuntimeError("Kein Full-HD Stream gefunden")
         return [url]
 
     embeds: list[str] = []
@@ -174,7 +189,7 @@ def resolve_url(url: str, ui) -> list[str]:
         pass
 
     sniffed: list[str] = []
-    if not embeds:
+    if not embeds and PLAYWRIGHT_AVAILABLE:
         ui.log("Sniffing stream URL via Playwright")
         try:
             sniffed = asyncio.run(_sniff(url, ui))
@@ -183,32 +198,35 @@ def resolve_url(url: str, ui) -> list[str]:
 
     candidates = list(dict.fromkeys(embeds + sniffed))
     if not candidates:
-        return [url]
+        raise RuntimeError("Kein Full-HD Stream gefunden")
 
     with ThreadPoolExecutor() as ex:
-        sizes = list(ex.map(_head_size, candidates))
-    items = sorted(zip(candidates, sizes), key=lambda x: x[1] or 0, reverse=True)
+        infos = list(ex.map(_probe_stream, candidates))
+    items = list(zip(candidates, infos))
+    items = sorted(items, key=lambda x: ((x[1][0] or 0), x[1][1] or 0), reverse=True)
 
     table = Table(title="Gefundene Streams")
     table.add_column("Nr")
     table.add_column("URL")
+    table.add_column("Qualität")
     table.add_column("Größe")
-    for i, (s, size) in enumerate(items, start=1):
-        table.add_row(str(i), s, _format_size(size))
+    for i, (s, (h, size)) in enumerate(items, start=1):
+        table.add_row(str(i), s, f"{h}p" if h else "?", _format_size(size))
     ui.console.print(table)
 
-    # use Rich's input method so the prompt remains visible while the progress bar is active
+    hd_items = [(s, info) for s, info in items if info[0] >= 1080]
+    if not hd_items:
+        raise RuntimeError("Kein Full-HD Stream gefunden")
+
     choice = ui.console.input("Welche URL verwenden? [1]: ")
     try:
         idx = int(choice) - 1 if choice.strip() else 0
     except ValueError:
         idx = 0
-    idx = max(0, min(idx, len(items) - 1))
+    idx = max(0, min(idx, len(hd_items) - 1))
 
-    # return selected URL first, followed by the remaining candidates so callers
-    # can try alternatives if the first choice fails
-    ordered = [items[idx][0]]
-    ordered.extend(s for i, (s, _) in enumerate(items) if i != idx)
+    ordered = [hd_items[idx][0]]
+    ordered.extend(s for i, (s, _) in enumerate(hd_items) if i != idx)
     return ordered
 
 
@@ -248,6 +266,8 @@ def download(url: str, out: str, ui) -> str:
         "concurrent_fragment_downloads": 5,
         # Use HTTP client impersonation to bypass Cloudflare checks on generic sites
         "extractor_args": {"generic": ["impersonate"]},
+        # ensure at least Full HD quality
+        "format": "bestvideo[height>=1080]+bestaudio/best[height>=1080]",
         # disable yt-dlp's own progress output so only the rich progress bar is shown
         "noprogress": True,
         "quiet": False,
@@ -295,19 +315,22 @@ def process(url: str, cfg, ui) -> None:
             continue
         seen.add(target)
         ui.log(f"Versuche {target}")
+        height, _ = _probe_stream(target)
+        if height < 1080:
+            ui.log(f"Stream {target} bietet nur {height}p – überspringe")
+            continue
         try:
             path = download(target, cfg.out, ui)
         except Exception as e:
             ui.log(f"yt-dlp konnte {target} nicht verarbeiten: {e}; versuche nächste URL")
-            try:
-                extra = asyncio.run(_sniff(target, ui))
-            except Exception as e2:
-                ui.log(f"Sniff fehlgeschlagen: {e2}")
-            else:
-                # Try freshly sniffed stream URLs before any remaining
-                # unresolved candidates so that direct media links are
-                # attempted immediately on the next loop iteration.
-                candidates[0:0] = extra
+            if PLAYWRIGHT_AVAILABLE:
+                try:
+                    extra = asyncio.run(_sniff(target, ui))
+                except Exception as e2:
+                    ui.log(f"Sniff fehlgeschlagen: {e2}")
+                else:
+                    hd_extra = [s for s in extra if _probe_stream(s)[0] >= 1080]
+                    candidates[0:0] = hd_extra
             continue
         if path:
             upload_to_koofr(path, cfg, ui)
