@@ -184,11 +184,13 @@ def _format_size(size: Optional[int]) -> str:
 def _probe_with_ffprobe(url: str) -> int:
     """Return stream height for ``url`` using ffprobe.
 
+def _probe_with_ffprobe(url: str) -> int:
+    """Return stream height for ``url`` using ffprobe.
+
     This is slower than yt-dlp metadata probing but more reliable for
     playlists that do not expose resolution information.
     """
     try:
-
         cmd = [
             "ffprobe",
             "-v",
@@ -274,7 +276,6 @@ def resolve_url(url: str, ui, min_height: int) -> tuple[list[str], int]:
         if height < min_height:
             ui.log(f"Stream bietet nur {height}p")
         return [url], height
-
 
     embeds: list[str] = []
     try:
@@ -407,6 +408,11 @@ def resolve_url(url: str, ui, min_height: int) -> tuple[list[str], int]:
         raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
     if not hd_items:
         ui.log("Kein Stream in geforderter Qualität gefunden – verwende beste verfügbare Qualität")
+    usable = hd_items if hd_items else [(s, info) for s, info in items if not info[2]]
+    if not usable:
+        raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
+    if not hd_items:
+        ui.log("Kein Stream in geforderter Qualität gefunden – verwende beste verfügbare Qualität")
 
     choice = ui.console.input("Welche URL verwenden? [1]: ")
     try:
@@ -497,7 +503,8 @@ def disconnect_vpn(ui) -> None:
 
 
 def process(url: str, cfg, ui) -> None:
-    candidates, first_height = resolve_url(url, ui, cfg.min_height)
+    base_url = url
+    candidates, first_height = resolve_url(base_url, ui, cfg.min_height)
     min_height = cfg.min_height
     if first_height < min_height:
         if first_height:
@@ -523,7 +530,22 @@ def process(url: str, cfg, ui) -> None:
         try:
             path = download(target, cfg.out, ui, min_height)
         except Exception as e:
+            msg = str(e)
             ui.log(f"yt-dlp konnte {target} nicht verarbeiten: {e}; versuche nächste URL")
+            # Tokens in stream URLs often expire and cause 403/404 responses.
+            # When that happens, re-resolve the original page to obtain fresh links.
+            if any(code in msg for code in ("403", "404")):
+                ui.log("Vermutlich abgelaufenes Token – erneuere Links")
+                try:
+                    new_cands, new_first = resolve_url(base_url, ui, cfg.min_height)
+                except Exception as e2:
+                    ui.log(f"Erneute Auflösung fehlgeschlagen: {e2}")
+                else:
+                    if new_first and new_first < min_height:
+                        ui.log(f"Falle auf {new_first}p zurück")
+                        min_height = new_first
+                    fresh = [c for c in new_cands if c not in seen and c not in candidates]
+                    candidates[0:0] = fresh
             if PLAYWRIGHT_AVAILABLE:
                 try:
                     extra = asyncio.run(_sniff(target, ui))
@@ -536,7 +558,6 @@ def process(url: str, cfg, ui) -> None:
                         if err:
                             ui.log(f"{s} nicht nutzbar: {err}")
                         elif h < min_height:
-
                             ui.log(f"{s} bietet nur {h}p")
                         else:
                             hd_extra.append(s)

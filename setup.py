@@ -19,7 +19,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 VENV_DIR = ROOT / ".venv"
 BIN_DIR = VENV_DIR / ("Scripts" if os.name == "nt" else "bin")
+# Use pythonw.exe on Windows so the GUI launches without a console window.
 PYTHON = BIN_DIR / ("python.exe" if os.name == "nt" else "python")
+PYTHONW = BIN_DIR / ("pythonw.exe" if os.name == "nt" else "python")
 
 
 def run(cmd: list[str]) -> None:
@@ -41,8 +43,9 @@ def install_deps() -> None:
 
 def create_launcher() -> None:
     if os.name == "nt":
+        exe = PYTHONW if PYTHONW.exists() else PYTHON
         launcher = ROOT / "run_gui.bat"
-        content = f"@echo off\n\"{PYTHON}\" \"{ROOT / 'simple_gui.py'}\"\n"
+        content = f"@echo off\n\"{exe}\" \"{ROOT / 'simple_gui.py'}\"\n"
     else:
         launcher = ROOT / "run_gui.sh"
         content = f"#!/bin/sh\n\"{PYTHON}\" \"{ROOT / 'simple_gui.py'}\"\n"

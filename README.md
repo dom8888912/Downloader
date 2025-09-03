@@ -13,8 +13,11 @@ python setup.py
 Der Befehl legt eine virtuelle Umgebung in `.venv` an, installiert alle
 Abhängigkeiten (inklusive der Bibliotheken für Cloudflare-Impersonation
 und Playwrights Firefox) und erzeugt ein Startskript (`run_gui.bat` bzw.
-`run_gui.sh`), über das
-die GUI per Doppelklick gestartet werden kann.
+`run_gui.sh`) im Projektordner. Ist ein Desktop-Verzeichnis vorhanden,
+wird die Datei zusätzlich dorthin kopiert, sodass die GUI direkt per
+Doppelklick gestartet werden kann. Unter Windows nutzt der Launcher
+`pythonw.exe`, damit kein Konsolenfenster geöffnet bleibt.
+
 
 ### Manuell
 
@@ -45,6 +48,9 @@ Wenn ein Kandidat scheitert, wird die Seite mit Playwright erkundet, um darin
 versteckte `.m3u8`/`.mpd`/`.mp4`-Streams zu finden. Gefundene direkte Streams
 werden sofort an den Anfang der Kandidatenliste gestellt und beim nächsten
 Schritt bevorzugt getestet.
+Schlägt ein Download wegen `HTTP 403`/`404` fehl (z. B. durch abgelaufene
+`expires`-Tokens), wird die ursprüngliche Seite automatisch erneut ausgewertet,
+um frische Stream-URLs zu erhalten.
 Falls sämtliche Kandidaten fehlschlagen, endet der Download ohne Ergebnis.
 Alle Meldungen von `yt-dlp` werden zusätzlich in `downloader.log`
 gespeichert, um die Fehlersuche zu erleichtern.
