@@ -181,6 +181,8 @@ def _format_size(size: Optional[int]) -> str:
         size /= 1024
     return f"{size:.1f} TB"
 
+def _probe_with_ffprobe(url: str) -> int:
+    """Return stream height for ``url`` using ffprobe.
 
 def _probe_with_ffprobe(url: str) -> int:
     """Return stream height for ``url`` using ffprobe.
@@ -281,6 +283,21 @@ def resolve_url(url: str, ui, min_height: int) -> tuple[list[str], int]:
         embeds = _extract_embeds(html)
     except Exception:
         pass
+    candidates = list(dict.fromkeys(embeds))
+
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
+
+    items = probe(candidates)
 
     candidates = list(dict.fromkeys(embeds))
 
@@ -298,6 +315,56 @@ def resolve_url(url: str, ui, min_height: int) -> tuple[list[str], int]:
 
     items = probe(candidates)
 
+    for s, (h, _, err) in items:
+        if err:
+            ui.log(f"{s} nicht nutzbar: {err}")
+        elif h < 1080:
+            ui.log(f"{s} bietet nur {h}p")
+
+    candidates = list(dict.fromkeys(embeds))
+
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
+    candidates = list(dict.fromkeys(embeds))
+
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
+
+    items = probe(candidates)
+
+    candidates = list(dict.fromkeys(embeds))
+
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
+
+    items = probe(candidates)
     for s, (h, _, err) in items:
         if err:
             ui.log(f"{s} nicht nutzbar: {err}")
@@ -336,7 +403,11 @@ def resolve_url(url: str, ui, min_height: int) -> tuple[list[str], int]:
             qual = "-"
         table.add_row(str(i), s, qual, _format_size(size))
     ui.console.print(table)
-
+    usable = hd_items if hd_items else [(s, info) for s, info in items if not info[2]]
+    if not usable:
+        raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
+    if not hd_items:
+        ui.log("Kein Stream in geforderter Qualität gefunden – verwende beste verfügbare Qualität")
     usable = hd_items if hd_items else [(s, info) for s, info in items if not info[2]]
     if not usable:
         raise RuntimeError("Kein Stream in geforderter Qualität gefunden")

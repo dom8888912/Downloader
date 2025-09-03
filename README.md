@@ -18,6 +18,7 @@ wird die Datei zusätzlich dorthin kopiert, sodass die GUI direkt per
 Doppelklick gestartet werden kann. Unter Windows nutzt der Launcher
 `pythonw.exe`, damit kein Konsolenfenster geöffnet bleibt.
 
+
 ### Manuell
 
 1. Python 3.11+ installieren
