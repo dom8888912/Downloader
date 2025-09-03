@@ -2,9 +2,9 @@
 """One-shot environment setup for the video downloader.
 
 This script creates a virtual environment in `.venv`, installs all
-required dependencies (including the Cloudflare impersonation extras for
-yt-dlp), downloads Playwright's Firefox browser and generates a small
-helper script for starting the GUI via double click.
+required dependencies (including the libraries needed for Cloudflare
+impersonation), downloads Playwright's Firefox browser and generates a
+small helper script for starting the GUI via double click.
 
 Run with: `python setup.py`
 """
@@ -36,8 +36,7 @@ def ensure_venv() -> None:
 def install_deps() -> None:
     run([str(PYTHON), "-m", "pip", "install", "--upgrade", "pip"])
     run([str(PYTHON), "-m", "pip", "install", "-r", "requirements.txt"])
-    # Install yt-dlp with Cloudflare extras so impersonation works out of the box
-    run([str(PYTHON), "-m", "pip", "install", "yt-dlp[cloudflare]"])
+
     run([str(PYTHON), "-m", "playwright", "install", "firefox"])
 
 

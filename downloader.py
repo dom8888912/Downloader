@@ -232,13 +232,13 @@ def _verify_resolution(path: str) -> int:
         return 0
 
 
-def resolve_url(url: str, ui) -> list[str]:
+def resolve_url(url: str, ui, min_height: int) -> list[str]:
     if url.split("?")[0].endswith(STREAM_EXTS):
         height, _, err = _probe_stream(url)
         if err:
             raise RuntimeError(f"Stream nicht nutzbar: {err}")
-        if height < 1080:
-            raise RuntimeError("Kein Full-HD Stream gefunden")
+        if height < min_height:
+            raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
         return [url]
 
     embeds: list[str] = []
@@ -285,10 +285,32 @@ def resolve_url(url: str, ui) -> list[str]:
         elif h < 1080:
             ui.log(f"{s} bietet nur {h}p")
 
-    hd_items = [(s, info) for s, info in items if info[0] >= 1080 and not info[2]]
+    candidates = list(dict.fromkeys(embeds))
+
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
+
+    items = probe(candidates)
+
+    for s, (h, _, err) in items:
+        if err:
+            ui.log(f"{s} nicht nutzbar: {err}")
+        elif h < min_height:
+            ui.log(f"{s} bietet nur {h}p")
+
+    hd_items = [(s, info) for s, info in items if info[0] >= min_height and not info[2]]
 
     if not hd_items and PLAYWRIGHT_AVAILABLE:
-        ui.log("Keine Full-HD Streams gefunden – starte Playwright-Sniffing")
+        ui.log(f"Keine Streams mit ≥{min_height}p gefunden – starte Playwright-Sniffing")
         sniffed: list[str] = []
         try:
             sniffed = asyncio.run(_sniff(url, ui))
@@ -299,12 +321,12 @@ def resolve_url(url: str, ui) -> list[str]:
         for s, (h, _, err) in items:
             if err:
                 ui.log(f"{s} nicht nutzbar: {err}")
-            elif h < 1080:
+            elif h < min_height:
                 ui.log(f"{s} bietet nur {h}p")
-        hd_items = [(s, info) for s, info in items if info[0] >= 1080 and not info[2]]
+        hd_items = [(s, info) for s, info in items if info[0] >= min_height and not info[2]]
 
     if not items:
-        raise RuntimeError("Kein Full-HD Stream gefunden")
+        raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
 
     table = Table(title="Gefundene Streams")
     table.add_column("Nr")
@@ -319,7 +341,8 @@ def resolve_url(url: str, ui) -> list[str]:
     ui.console.print(table)
 
     if not hd_items:
-        raise RuntimeError("Kein Full-HD Stream gefunden")
+        raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
+
 
     choice = ui.console.input("Welche URL verwenden? [1]: ")
     try:
@@ -333,7 +356,7 @@ def resolve_url(url: str, ui) -> list[str]:
     return ordered
 
 
-def download(url: str, out: str, ui) -> str:
+def download(url: str, out: str, ui, min_height: int) -> str:
     Path(out).mkdir(parents=True, exist_ok=True)
     result = {"path": None}
 
@@ -370,7 +393,7 @@ def download(url: str, out: str, ui) -> str:
         # Use HTTP client impersonation to bypass Cloudflare checks on generic sites
         "extractor_args": {"generic": ["impersonate"]},
         # ensure at least Full HD quality
-        "format": "bestvideo[height>=1080]+bestaudio/best[height>=1080]",
+        "format": f"bestvideo[height>={min_height}]+bestaudio/best[height>={min_height}]",
         "http_headers": HEADERS,
         # disable yt-dlp's own progress output so only the rich progress bar is shown
         "noprogress": True,
@@ -410,7 +433,7 @@ def disconnect_vpn(ui) -> None:
 
 
 def process(url: str, cfg, ui) -> None:
-    candidates = resolve_url(url, ui)
+    candidates = resolve_url(url, ui, cfg.min_height)
     seen: set[str] = set()
 
     while candidates:
@@ -423,11 +446,11 @@ def process(url: str, cfg, ui) -> None:
         if err:
             ui.log(f"Stream {target} nicht nutzbar: {err}")
             continue
-        if height < 1080:
+        if height < cfg.min_height:
             ui.log(f"Stream {target} bietet nur {height}p – überspringe")
             continue
         try:
-            path = download(target, cfg.out, ui)
+            path = download(target, cfg.out, ui, cfg.min_height)
         except Exception as e:
             ui.log(f"yt-dlp konnte {target} nicht verarbeiten: {e}; versuche nächste URL")
             if PLAYWRIGHT_AVAILABLE:
@@ -441,7 +464,7 @@ def process(url: str, cfg, ui) -> None:
                         h, _, err = _probe_stream(s)
                         if err:
                             ui.log(f"{s} nicht nutzbar: {err}")
-                        elif h < 1080:
+                        elif h < cfg.min_height:
                             ui.log(f"{s} bietet nur {h}p")
                         else:
                             hd_extra.append(s)
@@ -449,7 +472,7 @@ def process(url: str, cfg, ui) -> None:
             continue
         if path:
             final_height = _verify_resolution(path)
-            if final_height < 1080:
+            if final_height < cfg.min_height:
                 ui.log(f"Download bietet nur {final_height}p – versuche nächste URL")
                 try:
                     Path(path).unlink()

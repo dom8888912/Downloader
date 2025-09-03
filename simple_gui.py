@@ -3,8 +3,8 @@ from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 from threading import Thread
 from queue import Queue
-from types import SimpleNamespace
 from downloader import process
+from config import load_config
 
 
 def append_log(msg: str) -> None:
@@ -43,13 +43,7 @@ class TkUI:
 def worker(url: str) -> None:
     append_log(f"Starte Download: {url}")
     ui = TkUI()
-    cfg = SimpleNamespace(
-        out="downloads",
-        koofr_user=None,
-        koofr_password=None,
-        koofr_base="",
-        surfshark_server=None,
-    )
+    cfg = load_config([])
     try:
         process(url, cfg, ui)
         append_log("Fertig.")
