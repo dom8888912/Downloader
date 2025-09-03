@@ -9,6 +9,10 @@ import requests
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 from playwright.async_api import async_playwright
+
+# flag to avoid repeatedly trying Playwright when the bundled browsers are
+# missing and sniffing is therefore impossible
+PLAYWRIGHT_AVAILABLE = True
 from rich.table import Table
 
 STREAM_EXTS = (".m3u8", ".mpd", ".mp4")
@@ -57,85 +61,93 @@ def _extract_embeds(html: str) -> list[str]:
 async def _sniff(url: str, ui=None) -> list[str]:
     """Capture media requests by exploring the page with Playwright.
 
-    The function is declared as a coroutine so that ``await`` statements such
-    as ``page.goto`` operate within an async context, preventing the
-    "await outside async function" syntax error reported by some users.
+    If launching the browser fails (e.g. because ``playwright install`` wasn't
+    run), the failure is propagated and ``PLAYWRIGHT_AVAILABLE`` is set to
+    ``False`` so later calls can skip sniffing altogether.
     """
-    async with async_playwright() as pw:
-        browser = await pw.firefox.launch(headless=True)
-        context = await browser.new_context()
+    global PLAYWRIGHT_AVAILABLE
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.firefox.launch(headless=True)
+            context = await browser.new_context()
 
-        async def block_ads(route):
-            if any(pat in route.request.url for pat in AD_PATTERNS):
-                if ui:
-                    ui.log(f"Blocked {route.request.url}")
-                await route.abort()
-            else:
-                await route.continue_()
+            async def block_ads(route):
+                if any(pat in route.request.url for pat in AD_PATTERNS):
+                    if ui:
+                        ui.log(f"Blocked {route.request.url}")
+                    await route.abort()
+                else:
+                    await route.continue_()
 
-        await context.route("**", block_ads)
+            await context.route("**", block_ads)
 
-        page = await context.new_page()
-        page.on("popup", lambda p: asyncio.create_task(p.close()))
-        context.on("page", lambda p: asyncio.create_task(p.close()))
+            page = await context.new_page()
+            page.on("popup", lambda p: asyncio.create_task(p.close()))
+            context.on("page", lambda p: asyncio.create_task(p.close()))
 
-        found: set[str] = set()
+            found: set[str] = set()
 
-        async def handle_response(response):
-            u = response.url.split("?")[0]
-            if u.endswith(STREAM_EXTS):
-                found.add(response.url)
-                if ui:
-                    ui.log(f"Found {response.url}")
+            async def handle_response(response):
+                u = response.url.split("?")[0]
+                if u.endswith(STREAM_EXTS):
+                    found.add(response.url)
+                    if ui:
+                        ui.log(f"Found {response.url}")
 
-        context.on("response", handle_response)
+            context.on("response", handle_response)
 
-        # Visiting some pages takes a while. We do not want navigation
-        # timeouts to abort sniffing, so swallow any errors and keep waiting
-        # for network responses instead.
-        try:
-            await page.goto(url, timeout=60_000)
-        except Exception:
-            pass
-
-        visited: set[int] = set()
-
-        async def trigger(frame):
-            fid = id(frame)
-            if fid in visited:
-                return
-            visited.add(fid)
-
-            selectors = [
-                "button[aria-label*=play i]",
-                "button",
-                "div[role=button]",
-                "div[id*=play]",
-                "div[class*=play]",
-                "span[class*=play]",
-                "video",
-            ]
-            for sel in selectors:
-                try:
-                    await frame.locator(sel).first.click(timeout=1_000, force=True, no_wait_after=True)
-                    break
-                except Exception:
-                    continue
+            # Visiting some pages takes a while. We do not want navigation
+            # timeouts to abort sniffing, so swallow any errors and keep waiting
+            # for network responses instead.
             try:
-                await frame.evaluate("document.querySelectorAll('video').forEach(v=>v.play())")
+                await page.goto(url, timeout=60_000)
             except Exception:
                 pass
 
-        page.on("frameattached", lambda f: asyncio.create_task(trigger(f)))
+            visited: set[int] = set()
 
-        end = asyncio.get_event_loop().time() + 30
-        while asyncio.get_event_loop().time() < end:
-            for f in page.frames:
-                await trigger(f)
-            await asyncio.sleep(2)
+            async def trigger(frame):
+                fid = id(frame)
+                if fid in visited:
+                    return
+                visited.add(fid)
 
-        await browser.close()
-        return list(found)
+                selectors = [
+                    "button[aria-label*=play i]",
+                    "button",
+                    "div[role=button]",
+                    "div[id*=play]",
+                    "div[class*=play]",
+                    "span[class*=play]",
+                    "video",
+                ]
+                for sel in selectors:
+                    try:
+                        await frame.locator(sel).first.click(timeout=1_000, force=True, no_wait_after=True)
+                        break
+                    except Exception:
+                        continue
+                try:
+                    await frame.evaluate("document.querySelectorAll('video').forEach(v=>v.play())")
+                except Exception:
+                    pass
+
+            page.on("frameattached", lambda f: asyncio.create_task(trigger(f)))
+
+            end = asyncio.get_event_loop().time() + 30
+            while asyncio.get_event_loop().time() < end:
+                for f in page.frames:
+                    await trigger(f)
+                await asyncio.sleep(2)
+
+            await browser.close()
+            return list(found)
+    except Exception as e:
+        PLAYWRIGHT_AVAILABLE = False
+        if "Executable doesn't exist" in str(e) and ui:
+            # Offer a concise hint for the common case of missing browsers
+            ui.log("Playwright-Browser fehlen – `playwright install` ausführen")
+        raise
 
 
 def _format_size(size: Optional[int]) -> str:
@@ -174,7 +186,7 @@ def resolve_url(url: str, ui) -> list[str]:
         pass
 
     sniffed: list[str] = []
-    if not embeds:
+    if not embeds and PLAYWRIGHT_AVAILABLE:
         ui.log("Sniffing stream URL via Playwright")
         try:
             sniffed = asyncio.run(_sniff(url, ui))
@@ -299,15 +311,16 @@ def process(url: str, cfg, ui) -> None:
             path = download(target, cfg.out, ui)
         except Exception as e:
             ui.log(f"yt-dlp konnte {target} nicht verarbeiten: {e}; versuche nächste URL")
-            try:
-                extra = asyncio.run(_sniff(target, ui))
-            except Exception as e2:
-                ui.log(f"Sniff fehlgeschlagen: {e2}")
-            else:
-                # Try freshly sniffed stream URLs before any remaining
-                # unresolved candidates so that direct media links are
-                # attempted immediately on the next loop iteration.
-                candidates[0:0] = extra
+            if PLAYWRIGHT_AVAILABLE:
+                try:
+                    extra = asyncio.run(_sniff(target, ui))
+                except Exception as e2:
+                    ui.log(f"Sniff fehlgeschlagen: {e2}")
+                else:
+                    # Try freshly sniffed stream URLs before any remaining
+                    # unresolved candidates so that direct media links are
+                    # attempted immediately on the next loop iteration.
+                    candidates[0:0] = extra
             continue
         if path:
             upload_to_koofr(path, cfg, ui)
