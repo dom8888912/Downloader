@@ -50,6 +50,7 @@ def create_launcher() -> None:
     if os.name != "nt":
         launcher.chmod(0o755)
     print(f"Launcher created: {launcher}")
+
     desktop = Path(os.environ.get("USERPROFILE" if os.name == "nt" else "HOME", "")) / "Desktop"
     if desktop.exists():
         desktop_launcher = desktop / launcher.name

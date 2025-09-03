@@ -181,6 +181,33 @@ def _format_size(size: Optional[int]) -> str:
         size /= 1024
     return f"{size:.1f} TB"
 
+def _probe_with_ffprobe(url: str) -> int:
+    """Return stream height for ``url`` using ffprobe.
+
+    This is slower than yt-dlp metadata probing but more reliable for
+    playlists that do not expose resolution information.
+    """
+    try:
+
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=height",
+            "-of",
+            "csv=p=0",
+            url,
+        ]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if out.returncode == 0 and out.stdout.strip():
+            return int(out.stdout.strip())
+    except Exception:
+        pass
+    return 0
+
 
 def _probe_stream(url: str) -> Tuple[int, Optional[int], Optional[str]]:
     """Return ``(height, size, error)`` for ``url``.
@@ -201,11 +228,16 @@ def _probe_stream(url: str) -> Tuple[int, Optional[int], Optional[str]]:
             with YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as e:
+            height = _probe_with_ffprobe(url)
+            if height:
+                return height, None, None
             return 0, None, str(e)
     formats = info.get("formats") or [info]
     best = max(formats, key=lambda f: f.get("height") or 0)
     height = best.get("height") or 0
     size = best.get("filesize") or best.get("filesize_approx")
+    if not height:
+        height = _probe_with_ffprobe(url)
     return height, size, None
 
 
@@ -234,15 +266,14 @@ def _verify_resolution(path: str) -> int:
         return 0
 
 
-def resolve_url(url: str, ui, min_height: int) -> list[str]:
-
+def resolve_url(url: str, ui, min_height: int) -> tuple[list[str], int]:
     if url.split("?")[0].endswith(STREAM_EXTS):
         height, _, err = _probe_stream(url)
         if err:
             raise RuntimeError(f"Stream nicht nutzbar: {err}")
         if height < min_height:
-            raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
-        return [url]
+            ui.log(f"Stream bietet nur {height}p")
+        return [url], height
 
 
     embeds: list[str] = []
@@ -318,6 +349,21 @@ def resolve_url(url: str, ui, min_height: int) -> list[str]:
 
     items = probe(candidates)
 
+    candidates = list(dict.fromkeys(embeds))
+
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
+
+    items = probe(candidates)
     for s, (h, _, err) in items:
         if err:
             ui.log(f"{s} nicht nutzbar: {err}")
@@ -356,20 +402,22 @@ def resolve_url(url: str, ui, min_height: int) -> list[str]:
             qual = "-"
         table.add_row(str(i), s, qual, _format_size(size))
     ui.console.print(table)
-
-    if not hd_items:
+    usable = hd_items if hd_items else [(s, info) for s, info in items if not info[2]]
+    if not usable:
         raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
+    if not hd_items:
+        ui.log("Kein Stream in geforderter Qualität gefunden – verwende beste verfügbare Qualität")
 
     choice = ui.console.input("Welche URL verwenden? [1]: ")
     try:
         idx = int(choice) - 1 if choice.strip() else 0
     except ValueError:
         idx = 0
-    idx = max(0, min(idx, len(hd_items) - 1))
+    idx = max(0, min(idx, len(usable) - 1))
 
-    ordered = [hd_items[idx][0]]
-    ordered.extend(s for i, (s, _) in enumerate(hd_items) if i != idx)
-    return ordered
+    ordered = [usable[idx][0]]
+    ordered.extend(s for i, (s, _) in enumerate(usable) if i != idx)
+    return ordered, usable[idx][1][0] or 0
 
 
 def download(url: str, out: str, ui, min_height: int) -> str:
@@ -449,7 +497,14 @@ def disconnect_vpn(ui) -> None:
 
 
 def process(url: str, cfg, ui) -> None:
-    candidates = resolve_url(url, ui, cfg.min_height)
+    candidates, first_height = resolve_url(url, ui, cfg.min_height)
+    min_height = cfg.min_height
+    if first_height < min_height:
+        if first_height:
+            ui.log(f"Falle auf {first_height}p zurück")
+        else:
+            ui.log("Falle auf unbekannte Qualität zurück")
+        min_height = first_height
     seen: set[str] = set()
 
     while candidates:
@@ -462,11 +517,11 @@ def process(url: str, cfg, ui) -> None:
         if err:
             ui.log(f"Stream {target} nicht nutzbar: {err}")
             continue
-        if height < cfg.min_height:
+        if height < min_height:
             ui.log(f"Stream {target} bietet nur {height}p – überspringe")
             continue
         try:
-            path = download(target, cfg.out, ui, cfg.min_height)
+            path = download(target, cfg.out, ui, min_height)
         except Exception as e:
             ui.log(f"yt-dlp konnte {target} nicht verarbeiten: {e}; versuche nächste URL")
             if PLAYWRIGHT_AVAILABLE:
@@ -480,7 +535,8 @@ def process(url: str, cfg, ui) -> None:
                         h, _, err = _probe_stream(s)
                         if err:
                             ui.log(f"{s} nicht nutzbar: {err}")
-                        elif h < cfg.min_height:
+                        elif h < min_height:
+
                             ui.log(f"{s} bietet nur {h}p")
                         else:
                             hd_extra.append(s)
@@ -488,7 +544,7 @@ def process(url: str, cfg, ui) -> None:
             continue
         if path:
             final_height = _verify_resolution(path)
-            if final_height < cfg.min_height:
+            if final_height < min_height:
                 ui.log(f"Download bietet nur {final_height}p – versuche nächste URL")
                 try:
                     Path(path).unlink()

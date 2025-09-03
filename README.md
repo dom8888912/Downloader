@@ -38,9 +38,6 @@ der ein Stream akzeptiert wird. Standardmäßig steht der Wert auf 1080:
 min_height: 1080
 ```
 
-Ist in dieser Auflösung kein Stream verfügbar, fällt das Programm automatisch
-auf die jeweils nächst niedrigere Qualität zurück.
-
 Beim Download zeigt das Tool gefundene Stream-URLs an und sortiert sie nach Größe.
 Sollte die erste URL von `yt-dlp` nicht unterstützt werden, versucht das Programm
 automatisch die nächsten Kandidaten, bis ein Download gelingt.
