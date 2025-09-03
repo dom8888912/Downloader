@@ -2,9 +2,8 @@ import tkinter as tk
 from tkinter.scrolledtext import ScrolledText
 from threading import Thread
 from queue import Queue
-from pathlib import Path
-import os
-from yt_dlp import YoutubeDL
+from types import SimpleNamespace
+from downloader import process
 
 
 def append_log(msg: str) -> None:
@@ -12,38 +11,38 @@ def append_log(msg: str) -> None:
     log_queue.put(msg)
 
 
-def download_url(url: str, log) -> None:
-    """Download ``url`` using yt-dlp, logging progress via ``log``."""
-    base = url.rstrip('/').split('/')[-1].split('?')[0]
-    name = os.path.splitext(base)[0]
-    outdir = Path("downloads")
-    outdir.mkdir(exist_ok=True)
-    outtmpl = str(outdir / f"{name}.%(ext)s")
+class TkConsole:
+    def print(self, *args, **kwargs):
+        append_log(" ".join(str(a) for a in args))
 
-    def hook(d):
-        if d.get("status") == "downloading":
-            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 1
-            percent = d.get("downloaded_bytes", 0) / total * 100
-            speed = d.get("_speed_str", "")
-            eta = d.get("_eta_str", "")
-            log(f"{percent:5.1f}% {speed} ETA {eta}")
-        elif d.get("status") == "finished":
-            log(f"Abgeschlossen: {d.get('filename')}")
+    def input(self, prompt: str = "") -> str:
+        append_log(prompt)
+        return ""  # use default selection
 
-    ydl_opts = {
-        "outtmpl": outtmpl,
-        "progress_hooks": [hook],
-        "noprogress": True,
-        "quiet": True,
-    }
-    with YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+
+class TkUI:
+    def __init__(self):
+        self.console = TkConsole()
+
+    def log(self, msg: str) -> None:
+        append_log(str(msg))
+
+    def update_progress(self, name: str, percent: float, speed: str = "", eta: str = "") -> None:
+        append_log(f"{name}: {percent:5.1f}% {speed} ETA {eta}")
 
 
 def worker(url: str) -> None:
     append_log(f"Starte Download: {url}")
+    ui = TkUI()
+    cfg = SimpleNamespace(
+        out="downloads",
+        koofr_user=None,
+        koofr_password=None,
+        koofr_base="",
+        surfshark_server=None,
+    )
     try:
-        download_url(url, append_log)
+        process(url, cfg, ui)
         append_log("Fertig.")
     except Exception as e:
         append_log(f"Fehler: {e}")
