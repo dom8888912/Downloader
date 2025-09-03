@@ -34,6 +34,18 @@ AD_PATTERNS = [
     "ads.",
 ]
 
+# HTTP headers used for all yt-dlp requests so that hosts protected by
+# Cloudflare see us as a regular browser
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Sec-Fetch-Mode": "navigate",
+}
+
 
 def _fetch_html(url: str) -> str:
     """Retrieve ``url`` using yt-dlp's HTTP client with impersonation.
@@ -43,10 +55,20 @@ def _fetch_html(url: str) -> str:
     mimic a real browser and get the full HTML needed to locate embed
     players.
     """
-    ydl_opts = {"quiet": True, "extractor_args": {"generic": ["impersonate"]}}
-    with YoutubeDL(ydl_opts) as ydl:
-        with ydl.urlopen(url) as resp:
-            data = resp.read()
+    opts = {
+        "quiet": True,
+        "extractor_args": {"generic": ["impersonate"]},
+        "http_headers": HEADERS,
+    }
+    try:
+        with YoutubeDL(opts) as ydl:
+            with ydl.urlopen(url) as resp:
+                data = resp.read()
+    except Exception:
+        opts.pop("extractor_args", None)
+        with YoutubeDL(opts) as ydl:
+            with ydl.urlopen(url) as resp:
+                data = resp.read()
     try:
         return data.decode()
     except Exception:
@@ -163,17 +185,26 @@ def _probe_stream(url: str) -> Tuple[int, Optional[int], Optional[str]]:
 
     ``error`` contains a short message if probing failed.
     """
+    opts = {
+        "quiet": True,
+        "extractor_args": {"generic": ["impersonate"]},
+        "http_headers": HEADERS,
+    }
     try:
-        with YoutubeDL({"quiet": True}) as ydl:
+        with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-        formats = info.get("formats") or [info]
-        best = max(formats, key=lambda f: f.get("height") or 0)
-        height = best.get("height") or 0
-        size = best.get("filesize") or best.get("filesize_approx")
-
-        return height, size, None
-    except Exception as e:
-        return 0, None, str(e)
+    except Exception:
+        try:
+            opts.pop("extractor_args", None)
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            return 0, None, str(e)
+    formats = info.get("formats") or [info]
+    best = max(formats, key=lambda f: f.get("height") or 0)
+    height = best.get("height") or 0
+    size = best.get("filesize") or best.get("filesize_approx")
+    return height, size, None
 
 
 def _verify_resolution(path: str) -> int:
@@ -216,6 +247,22 @@ def resolve_url(url: str, ui) -> list[str]:
         embeds = _extract_embeds(html)
     except Exception:
         pass
+    candidates = list(dict.fromkeys(embeds))
+
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
+
+    items = probe(candidates)
+
     candidates = list(dict.fromkeys(embeds))
 
     def probe(cands: list[str]):
@@ -324,6 +371,7 @@ def download(url: str, out: str, ui) -> str:
         "extractor_args": {"generic": ["impersonate"]},
         # ensure at least Full HD quality
         "format": "bestvideo[height>=1080]+bestaudio/best[height>=1080]",
+        "http_headers": HEADERS,
         # disable yt-dlp's own progress output so only the rich progress bar is shown
         "noprogress": True,
         "quiet": False,

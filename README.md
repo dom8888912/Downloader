@@ -4,11 +4,31 @@ Dieses CLI-Tool lädt Videos mit [yt-dlp](https://github.com/yt-dlp/yt-dlp) heru
 
 ## Setup
 
+### Schnellstart
+
+```bash
+python setup.py
+```
+
+Der Befehl legt eine virtuelle Umgebung in `.venv` an, installiert alle
+Abhängigkeiten (inklusive `yt-dlp[cloudflare]` und Playwrights Firefox)
+und erzeugt ein Startskript (`run_gui.bat` bzw. `run_gui.sh`), über das
+die GUI per Doppelklick gestartet werden kann.
+
+### Manuell
+
 1. Python 3.11+ installieren
 2. Abhängigkeiten installieren:
    ```bash
    pip install -r requirements.txt
+   playwright install firefox
    ```
+3. (Optional) Für Cloudflare-geschützte Hosts wie `supervideo.cc` die
+   Impersonation-Abhängigkeit von yt-dlp installieren:
+   ```bash
+   pip install yt-dlp[cloudflare]
+   ```
+   Das Tool übergibt `--extractor-args "generic:impersonate"` automatisch.
 
 Beim Download zeigt das Tool gefundene Stream-URLs an und sortiert sie nach Größe.
 Sollte die erste URL von `yt-dlp` nicht unterstützt werden, versucht das Programm
