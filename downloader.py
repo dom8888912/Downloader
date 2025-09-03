@@ -131,7 +131,6 @@ async def _sniff(url: str, ui=None) -> list[str]:
                     await frame.evaluate("document.querySelectorAll('video').forEach(v=>v.play())")
                 except Exception:
                     pass
-
             page.on("frameattached", lambda f: asyncio.create_task(trigger(f)))
 
             end = asyncio.get_event_loop().time() + 30
@@ -139,7 +138,6 @@ async def _sniff(url: str, ui=None) -> list[str]:
                 for f in page.frames:
                     await trigger(f)
                 await asyncio.sleep(2)
-
             await browser.close()
             return list(found)
     except Exception as e:
@@ -172,6 +170,7 @@ def _probe_stream(url: str) -> Tuple[int, Optional[int], Optional[str]]:
         best = max(formats, key=lambda f: f.get("height") or 0)
         height = best.get("height") or 0
         size = best.get("filesize") or best.get("filesize_approx")
+
         return height, size, None
     except Exception as e:
         return 0, None, str(e)
@@ -217,7 +216,6 @@ def resolve_url(url: str, ui) -> list[str]:
         embeds = _extract_embeds(html)
     except Exception:
         pass
-
     candidates = list(dict.fromkeys(embeds))
 
     def probe(cands: list[str]):
