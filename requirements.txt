@@ -4,3 +4,5 @@ yt-dlp
 playwright
 requests
 brotli
+curl_cffi
+PyYAML
