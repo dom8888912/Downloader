@@ -36,6 +36,7 @@ def ensure_venv() -> None:
 def install_deps() -> None:
     run([str(PYTHON), "-m", "pip", "install", "--upgrade", "pip"])
     run([str(PYTHON), "-m", "pip", "install", "-r", "requirements.txt"])
+
     run([str(PYTHON), "-m", "playwright", "install", "firefox"])
 
 
