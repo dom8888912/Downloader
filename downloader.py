@@ -131,7 +131,6 @@ async def _sniff(url: str, ui=None) -> list[str]:
                     await frame.evaluate("document.querySelectorAll('video').forEach(v=>v.play())")
                 except Exception:
                     pass
-
             page.on("frameattached", lambda f: asyncio.create_task(trigger(f)))
 
             end = asyncio.get_event_loop().time() + 30
@@ -139,7 +138,6 @@ async def _sniff(url: str, ui=None) -> list[str]:
                 for f in page.frames:
                     await trigger(f)
                 await asyncio.sleep(2)
-
             await browser.close()
             return list(found)
     except Exception as e:
