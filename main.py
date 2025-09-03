@@ -1,3 +1,7 @@
+from env import ensure_venv
+
+ensure_venv()
+
 from config import load_config
 from ui import UI
 from downloader import process, connect_vpn, disconnect_vpn
