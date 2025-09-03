@@ -235,6 +235,7 @@ def _verify_resolution(path: str) -> int:
 
 
 def resolve_url(url: str, ui, min_height: int) -> list[str]:
+
     if url.split("?")[0].endswith(STREAM_EXTS):
         height, _, err = _probe_stream(url)
         if err:
@@ -243,13 +244,64 @@ def resolve_url(url: str, ui, min_height: int) -> list[str]:
             raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
         return [url]
 
+
     embeds: list[str] = []
     try:
         html = _fetch_html(url)
         embeds = _extract_embeds(html)
     except Exception:
         pass
+    candidates = list(dict.fromkeys(embeds))
 
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
+
+    items = probe(candidates)
+
+    candidates = list(dict.fromkeys(embeds))
+
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
+
+    items = probe(candidates)
+
+    for s, (h, _, err) in items:
+        if err:
+            ui.log(f"{s} nicht nutzbar: {err}")
+        elif h < 1080:
+            ui.log(f"{s} bietet nur {h}p")
+
+    candidates = list(dict.fromkeys(embeds))
+
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
     candidates = list(dict.fromkeys(embeds))
 
     def probe(cands: list[str]):
