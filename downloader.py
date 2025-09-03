@@ -158,8 +158,11 @@ def _format_size(size: Optional[int]) -> str:
     return f"{size:.1f} TB"
 
 
-def _probe_stream(url: str) -> Tuple[int, Optional[int]]:
-    """Return the highest available height and approximate size for ``url``."""
+def _probe_stream(url: str) -> Tuple[int, Optional[int], Optional[str]]:
+    """Return ``(height, size, error)`` for ``url``.
+
+    ``error`` contains a short message if probing failed.
+    """
     try:
         with YoutubeDL({"quiet": True}) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -167,14 +170,42 @@ def _probe_stream(url: str) -> Tuple[int, Optional[int]]:
         best = max(formats, key=lambda f: f.get("height") or 0)
         height = best.get("height") or 0
         size = best.get("filesize") or best.get("filesize_approx")
-        return height, size
+
+        return height, size, None
+    except Exception as e:
+        return 0, None, str(e)
+
+
+def _verify_resolution(path: str) -> int:
+    """Return the height of the first video stream in ``path``.
+
+    This uses ``ffprobe`` on the downloaded file as a fallback verification
+    step since some hosts may not expose accurate metadata via yt-dlp.
+    """
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=height",
+            "-of",
+            "csv=p=0",
+            path,
+        ]
+        out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return int(out.stdout.strip())
     except Exception:
-        return 0, None
+        return 0
 
 
 def resolve_url(url: str, ui) -> list[str]:
     if url.split("?")[0].endswith(STREAM_EXTS):
-        height, _ = _probe_stream(url)
+        height, _, err = _probe_stream(url)
+        if err:
+            raise RuntimeError(f"Stream nicht nutzbar: {err}")
         if height < 1080:
             raise RuntimeError("Kein Full-HD Stream gefunden")
         return [url]
@@ -185,34 +216,61 @@ def resolve_url(url: str, ui) -> list[str]:
         embeds = _extract_embeds(html)
     except Exception:
         pass
+    candidates = list(dict.fromkeys(embeds))
 
-    sniffed: list[str] = []
-    if not embeds and PLAYWRIGHT_AVAILABLE:
-        ui.log("Sniffing stream URL via Playwright")
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
+
+    items = probe(candidates)
+
+    for s, (h, _, err) in items:
+        if err:
+            ui.log(f"{s} nicht nutzbar: {err}")
+        elif h < 1080:
+            ui.log(f"{s} bietet nur {h}p")
+
+    hd_items = [(s, info) for s, info in items if info[0] >= 1080 and not info[2]]
+
+    if not hd_items and PLAYWRIGHT_AVAILABLE:
+        ui.log("Keine Full-HD Streams gefunden – starte Playwright-Sniffing")
+        sniffed: list[str] = []
         try:
             sniffed = asyncio.run(_sniff(url, ui))
         except Exception as e:
             ui.log(f"Sniff failed: {e}")
+        candidates = list(dict.fromkeys(candidates + sniffed))
+        items = probe(candidates)
+        for s, (h, _, err) in items:
+            if err:
+                ui.log(f"{s} nicht nutzbar: {err}")
+            elif h < 1080:
+                ui.log(f"{s} bietet nur {h}p")
+        hd_items = [(s, info) for s, info in items if info[0] >= 1080 and not info[2]]
 
-    candidates = list(dict.fromkeys(embeds + sniffed))
-    if not candidates:
+    if not items:
         raise RuntimeError("Kein Full-HD Stream gefunden")
-
-    with ThreadPoolExecutor() as ex:
-        infos = list(ex.map(_probe_stream, candidates))
-    items = list(zip(candidates, infos))
-    items = sorted(items, key=lambda x: ((x[1][0] or 0), x[1][1] or 0), reverse=True)
 
     table = Table(title="Gefundene Streams")
     table.add_column("Nr")
     table.add_column("URL")
     table.add_column("Qualität")
     table.add_column("Größe")
-    for i, (s, (h, size)) in enumerate(items, start=1):
-        table.add_row(str(i), s, f"{h}p" if h else "?", _format_size(size))
+    for i, (s, (h, size, err)) in enumerate(items, start=1):
+        qual = f"{h}p" if h else "?"
+        if err:
+            qual = "-"
+        table.add_row(str(i), s, qual, _format_size(size))
     ui.console.print(table)
 
-    hd_items = [(s, info) for s, info in items if info[0] >= 1080]
     if not hd_items:
         raise RuntimeError("Kein Full-HD Stream gefunden")
 
@@ -313,7 +371,10 @@ def process(url: str, cfg, ui) -> None:
             continue
         seen.add(target)
         ui.log(f"Versuche {target}")
-        height, _ = _probe_stream(target)
+        height, _, err = _probe_stream(target)
+        if err:
+            ui.log(f"Stream {target} nicht nutzbar: {err}")
+            continue
         if height < 1080:
             ui.log(f"Stream {target} bietet nur {height}p – überspringe")
             continue
@@ -327,9 +388,25 @@ def process(url: str, cfg, ui) -> None:
                 except Exception as e2:
                     ui.log(f"Sniff fehlgeschlagen: {e2}")
                 else:
-                    hd_extra = [s for s in extra if _probe_stream(s)[0] >= 1080]
+                    hd_extra = []
+                    for s in extra:
+                        h, _, err = _probe_stream(s)
+                        if err:
+                            ui.log(f"{s} nicht nutzbar: {err}")
+                        elif h < 1080:
+                            ui.log(f"{s} bietet nur {h}p")
+                        else:
+                            hd_extra.append(s)
                     candidates[0:0] = hd_extra
             continue
         if path:
+            final_height = _verify_resolution(path)
+            if final_height < 1080:
+                ui.log(f"Download bietet nur {final_height}p – versuche nächste URL")
+                try:
+                    Path(path).unlink()
+                except Exception:
+                    pass
+                continue
             upload_to_koofr(path, cfg, ui)
             break
