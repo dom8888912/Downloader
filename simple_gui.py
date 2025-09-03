@@ -1,3 +1,7 @@
+from env import ensure_venv
+
+ensure_venv()
+
 import tkinter as tk
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText

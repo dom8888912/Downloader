@@ -153,6 +153,7 @@ async def _sniff(url: str, ui=None) -> list[str]:
                     await frame.evaluate("document.querySelectorAll('video').forEach(v=>v.play())")
                 except Exception:
                     pass
+
             page.on("frameattached", lambda f: asyncio.create_task(trigger(f)))
 
             end = asyncio.get_event_loop().time() + 30
@@ -160,6 +161,7 @@ async def _sniff(url: str, ui=None) -> list[str]:
                 for f in page.frames:
                     await trigger(f)
                 await asyncio.sleep(2)
+
             await browser.close()
             return list(found)
     except Exception as e:
@@ -232,15 +234,16 @@ def _verify_resolution(path: str) -> int:
         return 0
 
 
-def resolve_url(url: str, ui, min_height: int) -> Tuple[list[str], int]:
+def resolve_url(url: str, ui, min_height: int) -> list[str]:
+
     if url.split("?")[0].endswith(STREAM_EXTS):
         height, _, err = _probe_stream(url)
         if err:
             raise RuntimeError(f"Stream nicht nutzbar: {err}")
         if height < min_height:
-            ui.log(f"Stream bietet nur {height}p – verwende niedrigere Qualität")
-            min_height = height
-        return [url], min_height
+            raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
+        return [url]
+
 
     embeds: list[str] = []
     try:
@@ -299,6 +302,19 @@ def resolve_url(url: str, ui, min_height: int) -> Tuple[list[str], int]:
             key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
             reverse=True,
         )
+    candidates = list(dict.fromkeys(embeds))
+
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
 
     items = probe(candidates)
 
@@ -326,17 +342,6 @@ def resolve_url(url: str, ui, min_height: int) -> Tuple[list[str], int]:
                 ui.log(f"{s} bietet nur {h}p")
         hd_items = [(s, info) for s, info in items if info[0] >= min_height and not info[2]]
 
-    if not hd_items:
-        valid = [(s, info) for s, info in items if info[0] and not info[2]]
-        if not valid:
-            raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
-        fallback_height = valid[0][1][0]
-        ui.log(
-            f"Keine Streams mit ≥{min_height}p gefunden – wähle {fallback_height}p"
-        )
-        min_height = fallback_height
-        hd_items = [(s, info) for s, info in valid if info[0] >= fallback_height]
-
     if not items:
         raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
 
@@ -352,6 +357,9 @@ def resolve_url(url: str, ui, min_height: int) -> Tuple[list[str], int]:
         table.add_row(str(i), s, qual, _format_size(size))
     ui.console.print(table)
 
+    if not hd_items:
+        raise RuntimeError("Kein Stream in geforderter Qualität gefunden")
+
     choice = ui.console.input("Welche URL verwenden? [1]: ")
     try:
         idx = int(choice) - 1 if choice.strip() else 0
@@ -361,7 +369,7 @@ def resolve_url(url: str, ui, min_height: int) -> Tuple[list[str], int]:
 
     ordered = [hd_items[idx][0]]
     ordered.extend(s for i, (s, _) in enumerate(hd_items) if i != idx)
-    return ordered, min_height
+    return ordered
 
 
 def download(url: str, out: str, ui, min_height: int) -> str:
@@ -441,7 +449,7 @@ def disconnect_vpn(ui) -> None:
 
 
 def process(url: str, cfg, ui) -> None:
-    candidates, min_height = resolve_url(url, ui, cfg.min_height)
+    candidates = resolve_url(url, ui, cfg.min_height)
     seen: set[str] = set()
 
     while candidates:
@@ -454,11 +462,11 @@ def process(url: str, cfg, ui) -> None:
         if err:
             ui.log(f"Stream {target} nicht nutzbar: {err}")
             continue
-        if height < min_height:
+        if height < cfg.min_height:
             ui.log(f"Stream {target} bietet nur {height}p – überspringe")
             continue
         try:
-            path = download(target, cfg.out, ui, min_height)
+            path = download(target, cfg.out, ui, cfg.min_height)
         except Exception as e:
             ui.log(f"yt-dlp konnte {target} nicht verarbeiten: {e}; versuche nächste URL")
             if PLAYWRIGHT_AVAILABLE:
@@ -472,7 +480,7 @@ def process(url: str, cfg, ui) -> None:
                         h, _, err = _probe_stream(s)
                         if err:
                             ui.log(f"{s} nicht nutzbar: {err}")
-                        elif h < min_height:
+                        elif h < cfg.min_height:
                             ui.log(f"{s} bietet nur {h}p")
                         else:
                             hd_extra.append(s)
@@ -480,7 +488,7 @@ def process(url: str, cfg, ui) -> None:
             continue
         if path:
             final_height = _verify_resolution(path)
-            if final_height < min_height:
+            if final_height < cfg.min_height:
                 ui.log(f"Download bietet nur {final_height}p – versuche nächste URL")
                 try:
                     Path(path).unlink()
