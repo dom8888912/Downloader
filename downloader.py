@@ -3,7 +3,7 @@ import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import requests
 from yt_dlp import YoutubeDL
@@ -131,7 +131,6 @@ async def _sniff(url: str, ui=None) -> list[str]:
                     await frame.evaluate("document.querySelectorAll('video').forEach(v=>v.play())")
                 except Exception:
                     pass
-
             page.on("frameattached", lambda f: asyncio.create_task(trigger(f)))
 
             end = asyncio.get_event_loop().time() + 30
@@ -139,7 +138,6 @@ async def _sniff(url: str, ui=None) -> list[str]:
                 for f in page.frames:
                     await trigger(f)
                 await asyncio.sleep(2)
-
             await browser.close()
             return list(found)
     except Exception as e:
@@ -160,22 +158,25 @@ def _format_size(size: Optional[int]) -> str:
     return f"{size:.1f} TB"
 
 
-def _head_size(url: str) -> Optional[int]:
+def _probe_stream(url: str) -> Tuple[int, Optional[int]]:
+    """Return the highest available height and approximate size for ``url``."""
     try:
-        resp = requests.head(
-            url,
-            allow_redirects=True,
-            timeout=10,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        cl = resp.headers.get("Content-Length")
-        return int(cl) if cl else None
+        with YoutubeDL({"quiet": True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+        formats = info.get("formats") or [info]
+        best = max(formats, key=lambda f: f.get("height") or 0)
+        height = best.get("height") or 0
+        size = best.get("filesize") or best.get("filesize_approx")
+        return height, size
     except Exception:
-        return None
+        return 0, None
 
 
 def resolve_url(url: str, ui) -> list[str]:
     if url.split("?")[0].endswith(STREAM_EXTS):
+        height, _ = _probe_stream(url)
+        if height < 1080:
+            raise RuntimeError("Kein Full-HD Stream gefunden")
         return [url]
 
     embeds: list[str] = []
@@ -195,32 +196,35 @@ def resolve_url(url: str, ui) -> list[str]:
 
     candidates = list(dict.fromkeys(embeds + sniffed))
     if not candidates:
-        return [url]
+        raise RuntimeError("Kein Full-HD Stream gefunden")
 
     with ThreadPoolExecutor() as ex:
-        sizes = list(ex.map(_head_size, candidates))
-    items = sorted(zip(candidates, sizes), key=lambda x: x[1] or 0, reverse=True)
+        infos = list(ex.map(_probe_stream, candidates))
+    items = list(zip(candidates, infos))
+    items = sorted(items, key=lambda x: ((x[1][0] or 0), x[1][1] or 0), reverse=True)
 
     table = Table(title="Gefundene Streams")
     table.add_column("Nr")
     table.add_column("URL")
+    table.add_column("Qualität")
     table.add_column("Größe")
-    for i, (s, size) in enumerate(items, start=1):
-        table.add_row(str(i), s, _format_size(size))
+    for i, (s, (h, size)) in enumerate(items, start=1):
+        table.add_row(str(i), s, f"{h}p" if h else "?", _format_size(size))
     ui.console.print(table)
 
-    # use Rich's input method so the prompt remains visible while the progress bar is active
+    hd_items = [(s, info) for s, info in items if info[0] >= 1080]
+    if not hd_items:
+        raise RuntimeError("Kein Full-HD Stream gefunden")
+
     choice = ui.console.input("Welche URL verwenden? [1]: ")
     try:
         idx = int(choice) - 1 if choice.strip() else 0
     except ValueError:
         idx = 0
-    idx = max(0, min(idx, len(items) - 1))
+    idx = max(0, min(idx, len(hd_items) - 1))
 
-    # return selected URL first, followed by the remaining candidates so callers
-    # can try alternatives if the first choice fails
-    ordered = [items[idx][0]]
-    ordered.extend(s for i, (s, _) in enumerate(items) if i != idx)
+    ordered = [hd_items[idx][0]]
+    ordered.extend(s for i, (s, _) in enumerate(hd_items) if i != idx)
     return ordered
 
 
@@ -260,6 +264,8 @@ def download(url: str, out: str, ui) -> str:
         "concurrent_fragment_downloads": 5,
         # Use HTTP client impersonation to bypass Cloudflare checks on generic sites
         "extractor_args": {"generic": ["impersonate"]},
+        # ensure at least Full HD quality
+        "format": "bestvideo[height>=1080]+bestaudio/best[height>=1080]",
         # disable yt-dlp's own progress output so only the rich progress bar is shown
         "noprogress": True,
         "quiet": False,
@@ -307,6 +313,10 @@ def process(url: str, cfg, ui) -> None:
             continue
         seen.add(target)
         ui.log(f"Versuche {target}")
+        height, _ = _probe_stream(target)
+        if height < 1080:
+            ui.log(f"Stream {target} bietet nur {height}p – überspringe")
+            continue
         try:
             path = download(target, cfg.out, ui)
         except Exception as e:
@@ -317,10 +327,8 @@ def process(url: str, cfg, ui) -> None:
                 except Exception as e2:
                     ui.log(f"Sniff fehlgeschlagen: {e2}")
                 else:
-                    # Try freshly sniffed stream URLs before any remaining
-                    # unresolved candidates so that direct media links are
-                    # attempted immediately on the next loop iteration.
-                    candidates[0:0] = extra
+                    hd_extra = [s for s in extra if _probe_stream(s)[0] >= 1080]
+                    candidates[0:0] = hd_extra
             continue
         if path:
             upload_to_koofr(path, cfg, ui)

@@ -15,6 +15,10 @@ def queue_progress(name: str, percent: float, speed: str, eta: str) -> None:
     """Forward progress updates to the main thread."""
     progress_queue.put((name, percent, speed, eta))
 
+def queue_progress(name: str, percent: float, speed: str, eta: str) -> None:
+    """Forward progress updates to the main thread."""
+    progress_queue.put((name, percent, speed, eta))
+
 
 class TkConsole:
     def print(self, *args, **kwargs):
