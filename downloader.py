@@ -153,7 +153,6 @@ async def _sniff(url: str, ui=None) -> list[str]:
                     await frame.evaluate("document.querySelectorAll('video').forEach(v=>v.play())")
                 except Exception:
                     pass
-
             page.on("frameattached", lambda f: asyncio.create_task(trigger(f)))
 
             end = asyncio.get_event_loop().time() + 30
@@ -161,7 +160,6 @@ async def _sniff(url: str, ui=None) -> list[str]:
                 for f in page.frames:
                     await trigger(f)
                 await asyncio.sleep(2)
-
             await browser.close()
             return list(found)
     except Exception as e:
@@ -249,6 +247,21 @@ def resolve_url(url: str, ui) -> list[str]:
         embeds = _extract_embeds(html)
     except Exception:
         pass
+    candidates = list(dict.fromkeys(embeds))
+
+    def probe(cands: list[str]):
+        if not cands:
+            return []
+        with ThreadPoolExecutor() as ex:
+            infos = list(ex.map(_probe_stream, cands))
+        items = list(zip(cands, infos))
+        return sorted(
+            items,
+            key=lambda x: ((x[1][0] or 0), x[1][1] or 0),
+            reverse=True,
+        )
+
+    items = probe(candidates)
 
     candidates = list(dict.fromkeys(embeds))
 

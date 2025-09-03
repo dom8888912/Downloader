@@ -11,6 +11,9 @@ def append_log(msg: str) -> None:
     """Add a message to the queue for display in the GUI."""
     log_queue.put(msg)
 
+def queue_progress(name: str, percent: float, speed: str, eta: str) -> None:
+    """Forward progress updates to the main thread."""
+    progress_queue.put((name, percent, speed, eta))
 
 def queue_progress(name: str, percent: float, speed: str, eta: str) -> None:
     """Forward progress updates to the main thread."""
